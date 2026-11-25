@@ -473,7 +473,7 @@
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/>
                     </svg>
-                    <span>Copy Result &amp; Challenge Link</span>
+                    <span id="shareResultLabel">Share Result</span>
                 </button>
                 <button id="playAgainBtn" class="w-full sm:flex-1 py-3 px-5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm shadow-lg shadow-emerald-950/60 transition flex items-center justify-center gap-2">
                     <span>Play Next Route</span>
@@ -563,7 +563,7 @@
                     <li><strong>Two Scoring Modes:</strong> Switch between <em>Least Countries</em> (fewest hops) and <em>Shortest Distance</em> (minimum cumulative km between country centroids, preventing cheap giant jumps across Russia or China).</li>
                     <li><strong>Penalties:</strong> Picking a country that does not share an active land border adds <strong>+1 Penalty</strong> (+2 hops or +1,000 km).</li>
                     <li><strong>Map:</strong> Tap a country on the map, then <em>Hop here</em>, to move there instead of using the list.</li>
-                    <li><strong>Daily:</strong> One route per day, the same for everyone (Medium, Least Countries). Finish it each day to build a streak.</li>
+                    <li><strong>Daily:</strong> One route per day, the same for everyone (Medium, Least Countries), with the same choices at every step. A new route starts at midnight US Pacific time. Every hop counts, even ones you step back from, and your progress is saved if you close the page. Finish it each day to build a streak.</li>
                     <li><strong>Practice:</strong> As many random routes as you like, with your own difficulty, scoring and region. Practice never affects your daily streak.</li>
                 </ul>
             </div>
@@ -1003,10 +1003,10 @@
         return result;
     }
 
-    function shuffleArray(arr) {
+    function shuffleArray(arr, rng = Math.random) {
         const copy = [...arr];
         for (let i = copy.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
+            const j = Math.floor(rng() * (i + 1));
             [copy[i], copy[j]] = [copy[j], copy[i]];
         }
         return copy;
@@ -1035,6 +1035,8 @@
         hintedCode: null,
         isComplete: false,
         isDaily: false,       // true while playing today's shared route
+        dailyReplay: false,   // replaying a Daily that's already finished (not saved)
+        log: [],              // what happened each move, for the shared result
         playMode: "PRACTICE", // "DAILY" | "PRACTICE"
         practice: { difficulty: "MEDIUM", gameMode: "HOPS", region: "ALL" }, // the player's own practice settings
         dailyKey: "",         // e.g. "2026-11-25"
@@ -1484,6 +1486,8 @@
         state.mapPickCode = null;
         state.isComplete = false;
         state.isDaily = false;
+        state.dailyReplay = false;
+        state.log = [];
 
         generateTenCandidates();
         setFeedback("🤝", `Challenge Loaded [${diff} • ${mode === "DISTANCE" ? "Shortest km" : "Least Countries"}]: ${COUNTRIES[start].name} → ${COUNTRIES[target].name}`, "success");
@@ -1492,13 +1496,49 @@
         return true;
     }
 
+    // Copy text: modern clipboard first, then the old way (which also works on iPhones)
+    async function copyText(text) {
+        try {
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(text);
+                return true;
+            }
+        } catch (e) {}
+        copyTextFallback(text);
+        return true;
+    }
+
+    // Phones: open the share sheet (Messages, WhatsApp...). Computers: copy to the clipboard.
+    async function shareOrCopy(text) {
+        const isPhone = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+        if (isPhone && navigator.share) {
+            try {
+                await navigator.share({ text });
+                return "shared";
+            } catch (e) {
+                if (e && e.name === "AbortError") return "cancelled";
+            }
+        }
+        await copyText(text);
+        return "copied";
+    }
+
+    function resultEmojiLine() {
+        const map = { G: "🟩", Y: "🟨", R: "🟥", H: "💡", B: "↩️" };
+        return state.log.map((x) => map[x] || "").join("");
+    }
+
     function copyTextFallback(text) {
         const temp = document.createElement("textarea");
         temp.value = text;
+        temp.setAttribute("readonly", "");
         temp.style.position = "fixed";
+        temp.style.top = "0";
         temp.style.opacity = "0";
         document.body.appendChild(temp);
+        temp.focus();
         temp.select();
+        temp.setSelectionRange(0, text.length);
         try {
             document.execCommand("copy");
         } catch (err) {
@@ -1507,7 +1547,7 @@
         document.body.removeChild(temp);
     }
 
-    function pickRoute(diff, region, rng) {
+    function pickRoute(diff, region, rng, pairOk = () => true) {
         const pool = ALL_CODES.filter((code) => {
             const c = COUNTRIES[code];
             const hasEnoughNeighbors = getNeighbors(code, diff).length >= 2;
@@ -1530,7 +1570,7 @@
         for (let attempt = 0; attempt < 250; attempt++) {
             const s = pool[Math.floor(rng() * pool.length)];
             const t = pool[Math.floor(rng() * pool.length)];
-            if (s === t) continue;
+            if (s === t || !pairOk(s, t)) continue;
 
             const hPath = findShortestHopPath(s, t, diff);
             if (!hPath) continue;
@@ -1552,7 +1592,7 @@
             for (let attempt = 0; attempt < 250; attempt++) {
                 const s = pool[Math.floor(rng() * pool.length)];
                 const t = pool[Math.floor(rng() * pool.length)];
-                if (s === t) continue;
+                if (s === t || !pairOk(s, t)) continue;
                 const hPath = findShortestHopPath(s, t, diff);
                 if (hPath && hPath.length - 1 >= 2) {
                     chosenStart = s;
@@ -1581,6 +1621,7 @@
         state.hintedCode = null;
         state.mapPickCode = null;
         state.isComplete = false;
+        state.log = [];
         generateTenCandidates();
     }
 
@@ -1613,7 +1654,7 @@
         const key = todayKey();
         const done = loadStats().daily[key];
         el.dailyInfoText.innerHTML =
-            `<strong class="text-amber-300">Daily #${dailyNumber(key)}</strong> · Medium · Least Countries · Same route for everyone today` +
+            `<strong class="text-amber-300">Daily #${dailyNumber(key)}</strong> · Medium · Least Countries · Same route for everyone · New route at midnight Pacific time` +
             (done ? ` · <span class="text-emerald-300">Finished: ${done.score} pts</span>` : "");
     }
 
@@ -1645,6 +1686,7 @@
         const diff = state.difficulty;
         const route = pickRoute(diff, state.regionFilter, Math.random);
         state.isDaily = false;
+        state.dailyReplay = false;
         beginRoute(route);
         setFeedback(
             "🧭",
@@ -1661,11 +1703,117 @@
      * =========================================================================
      */
     const DAILY_EPOCH = Date.UTC(2026, 10, 25); // Daily #1 = 25 Nov 2026
+    // Everyone shares one calendar: the Daily changes at midnight US Pacific time
+    const DAILY_TIME_ZONE = "America/Los_Angeles";
+    const SOUTH_AMERICA = new Set(["COL", "VEN", "GUY", "SUR", "ECU", "PER", "BRA", "BOL", "CHL", "ARG", "PRY", "URY"]);
 
     function todayKey() {
-        const d = new Date();
         const pad = (n) => String(n).padStart(2, "0");
-        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+        try {
+            const parts = {};
+            new Intl.DateTimeFormat("en-US", { timeZone: DAILY_TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit" })
+                .formatToParts(new Date())
+                .forEach((p) => { parts[p.type] = p.value; });
+            if (parts.year && parts.month && parts.day) return `${parts.year}-${parts.month}-${parts.day}`;
+        } catch (e) {}
+        // Very old browsers: fall back to UTC-8
+        const d = new Date(Date.now() - 8 * 3600000);
+        return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+    }
+
+    // Daily routes are picked in blocks of 64 days; within a block no start/destination pair repeats
+    const DAILY_BLOCK = 64;
+    const dailyRouteCache = {};
+
+    function keyForDailyIndex(i) {
+        const d = new Date(DAILY_EPOCH + i * 86400000);
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+    }
+
+    function routePairKey(s, t) {
+        return [s, t].sort().join("-");
+    }
+
+    function pickDailyRouteAvoiding(key, used, recentEnds) {
+        // Not a route from earlier in the block, and no start/destination country from the last 3 days
+        const fresh = (s, t) => !used.has(routePairKey(s, t)) && !recentEnds.has(s) && !recentEnds.has(t);
+        let route = null;
+        for (let attempt = 0; attempt < 8; attempt++) {
+            const rng = seededRandom("border-hop-daily-v2-" + key + (attempt ? "-" + attempt : ""));
+            // About one day in four: a route in the Americas that starts or ends in South America
+            if (rng() < 0.25) {
+                route = pickRoute("MEDIUM", "Americas", rng, (s, t) => (SOUTH_AMERICA.has(s) || SOUTH_AMERICA.has(t)) && fresh(s, t));
+                if (route.start && fresh(route.start, route.target)) return route;
+            }
+            route = pickRoute("MEDIUM", "ALL", rng, fresh);
+            if (route.start && fresh(route.start, route.target)) return route;
+        }
+        return route;
+    }
+
+    function pickDailyRoute(key) {
+        // The very first Daily keeps the route people already played
+        if (key === "2026-11-25") return pickRoute("MEDIUM", "ALL", seededRandom("border-hop-daily-" + key));
+        if (dailyRouteCache[key]) return dailyRouteCache[key];
+        const index = dailyNumber(key) - 1;
+        const blockStart = index - ((index - 1) % DAILY_BLOCK);
+        const used = new Set();
+        const recent = [];
+        let route = null;
+        for (let i = blockStart; i <= index; i++) {
+            const k = keyForDailyIndex(i);
+            route = dailyRouteCache[k] || pickDailyRouteAvoiding(k, used, new Set(recent.slice(-6)));
+            dailyRouteCache[k] = route;
+            used.add(routePairKey(route.start, route.target));
+            recent.push(route.start, route.target);
+        }
+        return route;
+    }
+
+    // Saves the Daily as you play, so closing and reopening the page picks up where you left off
+    const DAILY_PROGRESS_KEY = "borderHop.dailyProgress.v1";
+
+    function saveDailyProgress() {
+        if (!state.isDaily || state.dailyReplay) return;
+        try {
+            if (state.isComplete) {
+                window.localStorage.removeItem(DAILY_PROGRESS_KEY);
+                return;
+            }
+            window.localStorage.setItem(DAILY_PROGRESS_KEY, JSON.stringify({
+                key: state.dailyKey,
+                start: state.startCode,
+                target: state.targetCode,
+                path: state.playerPath,
+                steps: state.steps,
+                distanceKm: state.distanceKm,
+                penalties: state.penalties,
+                hinted: state.hintedCode,
+                wrong: Array.from(state.wrongGuessesThisTurn),
+                log: state.log
+            }));
+        } catch (e) {}
+    }
+
+    function restoreDailyProgress() {
+        try {
+            const saved = JSON.parse(window.localStorage.getItem(DAILY_PROGRESS_KEY) || "null");
+            if (!saved || saved.key !== state.dailyKey || saved.start !== state.startCode || saved.target !== state.targetCode) return false;
+            if (!Array.isArray(saved.path) || saved.path.length === 0 || !saved.path.every((c) => COUNTRIES[c])) return false;
+            state.playerPath = saved.path;
+            state.currentCode = saved.path[saved.path.length - 1];
+            state.steps = saved.steps || 0;
+            state.distanceKm = saved.distanceKm || 0;
+            state.penalties = saved.penalties || 0;
+            state.hintedCode = saved.hinted || null;
+            state.wrongGuessesThisTurn = new Set((saved.wrong || []).filter((c) => COUNTRIES[c]));
+            state.log = Array.isArray(saved.log) ? saved.log : [];
+            generateTenCandidates();
+            return true;
+        } catch (e) {
+            return false;
+        }
     }
 
     function dailyNumber(key) {
@@ -1696,18 +1844,22 @@
         applyGameModeUI("HOPS");
         state.regionFilter = "ALL";
         el.regionSelect.value = "ALL";
-        const route = pickRoute("MEDIUM", "ALL", seededRandom("border-hop-daily-" + key));
+        const route = pickDailyRoute(key);
         state.isDaily = true;
         state.dailyKey = key;
+        const done = loadStats().daily[key];
+        state.dailyReplay = !!done;
         beginRoute(route);
         updateDailyInfo();
-        const done = loadStats().daily[key];
-        setFeedback(
-            "📅",
-            `Daily #${dailyNumber(key)}: ${COUNTRIES[route.start].name} to ${COUNTRIES[route.target].name}.` +
-                (done ? ` You already finished today's route (${done.score} pts), so this replay won't change your result. Switch to Practice for more routes.` : " Everyone gets this route today."),
-            "warning"
-        );
+        const resumed = !done && restoreDailyProgress();
+        const intro = `Daily #${dailyNumber(key)}: ${COUNTRIES[route.start].name} to ${COUNTRIES[route.target].name}.`;
+        if (done) {
+            setFeedback("📅", `${intro} You already finished today's route (${done.score} pts), so this replay won't change your result. Switch to Practice for more routes.`, "warning");
+        } else if (resumed) {
+            setFeedback("📅", `${intro} Picking up where you left off: you're in ${COUNTRIES[state.currentCode].name}.`, "warning");
+        } else {
+            setFeedback("📅", `${intro} Everyone gets this route today. In the Daily, every hop counts, even ones you step back from.`, "warning");
+        }
         renderAll();
         updateMapDisplay(false);
     }
@@ -1758,7 +1910,7 @@
         stats.completed += 1;
         if (isPerfectRun()) stats.perfect += 1;
 
-        if (state.isDaily && !stats.daily[state.dailyKey]) {
+        if (state.isDaily && !state.dailyReplay && !stats.daily[state.dailyKey]) {
             stats.daily[state.dailyKey] = {
                 score: state.steps + state.penalties * 2,
                 hops: state.steps,
@@ -1865,12 +2017,14 @@
         const bestNextHop = optimalFromHere && optimalFromHere.length > 1 ? optimalFromHere[1] : null;
 
         const chosen = new Set();
+        // Daily: the same 10 choices for everyone standing in the same country
+        const rng = state.isDaily ? seededRandom(`border-hop-daily-${state.dailyKey}-choices-${state.currentCode}`) : Math.random;
 
         if (bestNextHop) {
             chosen.add(bestNextHop);
         }
 
-        const otherNeighbors = shuffleArray(validNeighbors.filter((n) => !chosen.has(n)));
+        const otherNeighbors = shuffleArray(validNeighbors.filter((n) => !chosen.has(n)), rng);
         const maxNeighborSlots = diff === "EASY"
             ? Math.min(otherNeighbors.length, 6)
             : Math.min(otherNeighbors.length, 4);
@@ -1883,7 +2037,8 @@
         const nearbyPool = shuffleArray(
             getCountriesWithinGraphRadius(state.currentCode, nearRadius[0], nearRadius[1], diff).filter(
                 (c) => c !== state.currentCode && !chosen.has(c)
-            )
+            ),
+            rng
         );
         const targetAfterNearby = diff === "HARD" ? 7 : 8;
         for (const c of nearbyPool) {
@@ -1897,14 +2052,15 @@
                     c !== state.currentCode &&
                     !chosen.has(c) &&
                     !validNeighbors.includes(c)
-            )
+            ),
+            rng
         );
         for (const c of distantPool) {
             if (chosen.size >= 10) break;
             chosen.add(c);
         }
 
-        state.candidates = shuffleArray(Array.from(chosen));
+        state.candidates = shuffleArray(Array.from(chosen), rng);
     }
 
     function handleSelectCountry(selectedCode) {
@@ -1918,6 +2074,10 @@
 
         if (isBordering) {
             const hopKm = getDistanceKm(state.currentCode, selectedCode);
+            // Green if this hop got closer to the target, yellow if it was legal but not closer
+            const hopsLeftBefore = (findShortestHopPath(state.currentCode, state.targetCode, state.difficulty) || []).length - 1;
+            const hopsLeftAfter = (findShortestHopPath(selectedCode, state.targetCode, state.difficulty) || []).length - 1;
+            state.log.push(hopsLeftAfter === hopsLeftBefore - 1 ? "G" : "Y");
             state.currentCode = selectedCode;
             state.playerPath.push(selectedCode);
             state.steps += 1;
@@ -1933,6 +2093,7 @@
                     "success"
                 );
                 const stats = recordCompletion();
+                saveDailyProgress();
                 renderAll();
                 updateMapDisplay(false);
                 showVictoryModal(stats);
@@ -1948,9 +2109,11 @@
             );
             renderAll();
             updateMapDisplay(state.difficulty === "EASY");
+            saveDailyProgress();
         } else {
             state.penalties += 1;
             state.wrongGuessesThisTurn.add(selectedCode);
+            state.log.push("R");
             const penaltyText = state.gameMode === "DISTANCE"
                 ? `+1 Penalty (+${DISTANCE_PENALTY_KM.toLocaleString()} km)`
                 : `+1 Penalty (+2 pts)`;
@@ -1960,6 +2123,7 @@
                 "error"
             );
             renderAll(selectedCode);
+            saveDailyProgress();
         }
     }
 
@@ -1971,15 +2135,24 @@
         const refundedKm = getDistanceKm(prevCode, removedCode);
 
         state.currentCode = prevCode;
-        state.steps = Math.max(0, state.steps - 1);
-        state.distanceKm = Math.max(0, state.distanceKm - refundedKm);
+        // Practice: stepping back undoes the hop. Daily: the hop you undid still counts.
+        if (!state.isDaily) {
+            state.steps = Math.max(0, state.steps - 1);
+            state.distanceKm = Math.max(0, state.distanceKm - refundedKm);
+        }
         state.wrongGuessesThisTurn.clear();
         state.hintedCode = null;
+        state.log.push("B");
 
         generateTenCandidates();
-        setFeedback("↩️", `Stepped back to ${COUNTRIES[state.currentCode].name}.`, "neutral");
+        setFeedback(
+            "↩️",
+            `Stepped back to ${COUNTRIES[state.currentCode].name}.` + (state.isDaily ? " In the Daily, the hop you undid still counts." : ""),
+            "neutral"
+        );
         renderAll();
         updateMapDisplay(state.difficulty === "EASY");
+        saveDailyProgress();
     }
 
     function handleHint() {
@@ -1995,6 +2168,7 @@
         if (state.hintedCode !== nextOptimal) {
             state.penalties += 1;
             state.hintedCode = nextOptimal;
+            state.log.push("H");
         }
 
         const modeHintLabel = state.gameMode === "DISTANCE" ? "shortest-distance" : "fewest-hops";
@@ -2004,6 +2178,7 @@
             "warning"
         );
         renderAll();
+        saveDailyProgress();
     }
 
     /**
@@ -2308,8 +2483,8 @@
     });
     el.challengeBtn.addEventListener("click", openChallengeModal);
     el.closeChallengeBtn.addEventListener("click", closeChallengeModal);
-    el.copyChallengeBtn.addEventListener("click", () => {
-        copyTextFallback(el.challengeShareInput.value);
+    el.copyChallengeBtn.addEventListener("click", async () => {
+        await copyText(el.challengeShareInput.value);
         el.copyChallengeStatus.classList.remove("hidden");
     });
     el.loadChallengeBtn.addEventListener("click", () => {
@@ -2320,13 +2495,13 @@
             el.loadChallengeError.classList.remove("hidden");
         }
     });
-    el.shareVictoryResultBtn.addEventListener("click", () => {
+    el.shareVictoryResultBtn.addEventListener("click", async () => {
         const { code, shareUrl } = buildChallengePayload();
         const modeLabel = state.gameMode === "DISTANCE" ? "Shortest Distance" : "Least Countries";
         const scoreText = state.gameMode === "DISTANCE"
             ? `${formatKm(state.distanceKm + state.penalties * DISTANCE_PENALTY_KM)} (${state.steps} hops, ${state.penalties} penalties)`
             : `${state.steps + state.penalties * 2} pts (${state.steps} hops, ${state.penalties} penalties)`;
-        let summary = `🌍 Border Hop [${state.difficulty} • ${modeLabel}]\n${COUNTRIES[state.startCode].flag} ${COUNTRIES[state.startCode].name} → ${COUNTRIES[state.targetCode].flag} ${COUNTRIES[state.targetCode].name}\nResult: ${scoreText}\nChallenge Code: ${code}${shareUrl.startsWith("http") ? `\nPlay: ${shareUrl}` : ""}`;
+        let summary = `🌍 Border Hop [${state.difficulty} • ${modeLabel}]\n${COUNTRIES[state.startCode].flag} ${COUNTRIES[state.startCode].name} → ${COUNTRIES[state.targetCode].flag} ${COUNTRIES[state.targetCode].name}\n${resultEmojiLine()}\nResult: ${scoreText}\nChallenge Code: ${code}${shareUrl.startsWith("http") ? `\nPlay: ${shareUrl}` : ""}`;
         if (state.isDaily) {
             let dailyUrl = "";
             try {
@@ -2335,13 +2510,14 @@
                 if (u.protocol.startsWith("http")) dailyUrl = u.toString();
             } catch (e) {}
             const perfect = isPerfectRun() ? " ★ perfect" : "";
-            summary = `🌍 Border Hop Daily #${dailyNumber(state.dailyKey)}\n${COUNTRIES[state.startCode].flag} ${COUNTRIES[state.startCode].name} → ${COUNTRIES[state.targetCode].flag} ${COUNTRIES[state.targetCode].name}\nScore: ${state.steps + state.penalties * 2} pts (${state.steps} hops, ${state.penalties} penalties; best possible ${state.optimalHopPath.length - 1})${perfect}${dailyUrl ? `\nPlay today's route: ${dailyUrl}` : ""}`;
+            summary = `🌍 Border Hop Daily #${dailyNumber(state.dailyKey)}\n${COUNTRIES[state.startCode].flag} ${COUNTRIES[state.startCode].name} → ${COUNTRIES[state.targetCode].flag} ${COUNTRIES[state.targetCode].name}\n${resultEmojiLine()}\nScore: ${state.steps + state.penalties * 2} pts (${state.steps} hops, ${state.penalties} penalties; best possible ${state.optimalHopPath.length - 1})${perfect}${dailyUrl ? `\nPlay today's route: ${dailyUrl}` : ""}`;
         }
-        copyTextFallback(summary);
-        el.shareVictoryResultBtn.querySelector("span").textContent = "Copied Score & Link!";
-        setTimeout(() => {
-            el.shareVictoryResultBtn.querySelector("span").textContent = "Copy Result & Challenge Link";
-        }, 2200);
+        const label = el.shareVictoryResultBtn.querySelector("span");
+        const before = label.textContent;
+        const outcome = await shareOrCopy(summary);
+        if (outcome === "cancelled") return;
+        label.textContent = outcome === "shared" ? "Shared!" : "Copied! Paste it in a message";
+        setTimeout(() => { label.textContent = before; }, 2400);
     });
     el.hintBtn.addEventListener("click", handleHint);
     el.backtrackBtn.addEventListener("click", handleBacktrack);
