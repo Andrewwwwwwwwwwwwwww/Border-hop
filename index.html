@@ -2499,9 +2499,9 @@
         const { code, shareUrl } = buildChallengePayload();
         const modeLabel = state.gameMode === "DISTANCE" ? "Shortest Distance" : "Least Countries";
         const scoreText = state.gameMode === "DISTANCE"
-            ? `${formatKm(state.distanceKm + state.penalties * DISTANCE_PENALTY_KM)} (${state.steps} hops, ${state.penalties} penalties)`
-            : `${state.steps + state.penalties * 2} pts (${state.steps} hops, ${state.penalties} penalties)`;
-        let summary = `🌍 Border Hop [${state.difficulty} • ${modeLabel}]\n${COUNTRIES[state.startCode].flag} ${COUNTRIES[state.startCode].name} → ${COUNTRIES[state.targetCode].flag} ${COUNTRIES[state.targetCode].name}\n${resultEmojiLine()}\nResult: ${scoreText}\nChallenge Code: ${code}${shareUrl.startsWith("http") ? `\nPlay: ${shareUrl}` : ""}`;
+            ? `${formatKm(state.distanceKm + state.penalties * DISTANCE_PENALTY_KM)} (best possible ${formatKm(computePathDistanceKm(state.optimalDistPath))})`
+            : `${state.steps + state.penalties * 2} pts (best possible ${state.optimalHopPath.length - 1})`;
+        let summary = `🌍 Border Hop [${state.difficulty} • ${modeLabel}]\n${COUNTRIES[state.startCode].flag} ${COUNTRIES[state.startCode].name} → ${COUNTRIES[state.targetCode].flag} ${COUNTRIES[state.targetCode].name}\n${resultEmojiLine()}\nScore: ${scoreText}\nChallenge Code: ${code}${shareUrl.startsWith("http") ? `\nPlay: ${shareUrl}` : ""}`;
         if (state.isDaily) {
             let dailyUrl = "";
             try {
@@ -2510,7 +2510,7 @@
                 if (u.protocol.startsWith("http")) dailyUrl = u.toString();
             } catch (e) {}
             const perfect = isPerfectRun() ? " ★ perfect" : "";
-            summary = `🌍 Border Hop Daily #${dailyNumber(state.dailyKey)}\n${COUNTRIES[state.startCode].flag} ${COUNTRIES[state.startCode].name} → ${COUNTRIES[state.targetCode].flag} ${COUNTRIES[state.targetCode].name}\n${resultEmojiLine()}\nScore: ${state.steps + state.penalties * 2} pts (${state.steps} hops, ${state.penalties} penalties; best possible ${state.optimalHopPath.length - 1})${perfect}${dailyUrl ? `\nPlay today's route: ${dailyUrl}` : ""}`;
+            summary = `🌍 Border Hop Daily #${dailyNumber(state.dailyKey)}\n${COUNTRIES[state.startCode].flag} ${COUNTRIES[state.startCode].name} → ${COUNTRIES[state.targetCode].flag} ${COUNTRIES[state.targetCode].name}\n${resultEmojiLine()}\nScore: ${state.steps + state.penalties * 2} pts (best possible ${state.optimalHopPath.length - 1})${perfect}${dailyUrl ? `\nPlay today's route: ${dailyUrl}` : ""}`;
         }
         const label = el.shareVictoryResultBtn.querySelector("span");
         const before = label.textContent;
