@@ -1,6 +1,6 @@
 // Keeps a copy of the game so it opens without internet once it has been visited.
 // Always tries the network first, so new versions show up as soon as you're online.
-const CACHE = "border-hop-v9";
+const CACHE = "border-hop-v10";
 const FILES = ["./", "./index.html", "./legacy.html", "./manifest.webmanifest", "./icons/icon-192.png", "./icons/apple-touch-icon.png"];
 
 self.addEventListener("install", (event) => {
